@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
 
 const app = require("../src/app");
+const db = require("../models");
 
 const makeRequest = async (method, path, body, headers = {}) => {
   const server = app.listen(0);
@@ -51,13 +52,53 @@ test("GET / responds with success payload", async () => {
   assert.equal(payload.message, "Banking API is running");
 });
 
-test("auth routes are mounted", async () => {
-  const res = await makeRequest("POST", "/auth/login", {
-    email: "user@example.com",
-    password: "secret",
-  });
+test("auth routes are mounted without connecting to a database", async () => {
+  const originalFindOne = db.users.findOne;
 
-  assert.notEqual(res.status, 404);
+  // The purpose of this test is to verify route registration, not database access.
+  db.users.findOne = async () => null;
+
+  try {
+    const res = await makeRequest("POST", "/auth/login", {
+      email: "user@example.com",
+      password: "secret",
+    });
+
+    assert.equal(res.status, 401);
+  } finally {
+    db.users.findOne = originalFindOne;
+  }
+});
+
+test("POST /auth/forgot-password resets a user's password", async () => {
+  const originalFindOne = db.users.findOne;
+  const originalUpdate = db.users.update;
+
+  db.users.findOne = async ({ where }) =>
+    where.email === "user@example.com"
+      ? { id: 42, email: "user@example.com" }
+      : null;
+  db.users.update = async (changes, options) => {
+    assert.equal(options.where.id, 42);
+    assert.ok(typeof changes.password === "string");
+    return [1];
+  };
+
+  try {
+    const res = await makeRequest("POST", "/auth/forgot-password", {
+      email: "user@example.com",
+      newPassword: "NewPass123!",
+      confirmPassword: "NewPass123!",
+    });
+
+    assert.equal(res.status, 200);
+    const payload = await res.json();
+    assert.equal(payload.status, "success");
+    assert.match(payload.message, /password.*reset/i);
+  } finally {
+    db.users.findOne = originalFindOne;
+    db.users.update = originalUpdate;
+  }
 });
 
 test("Paystack webhook verifies the original raw request bytes", async () => {

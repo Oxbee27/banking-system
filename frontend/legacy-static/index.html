@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#f5f7f4">
+    <title>Northstar Banking</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="/styles.css">
+    <script src="/app.js" defer></script>
+</head>
+
+<body>
+    <main id="app" aria-live="polite">
+        <section class="auth-layout" id="auth-view">
+            <div class="auth-brand">
+                <a class="brand" href="/" aria-label="Northstar home"><span
+                        class="brand-mark">N</span><span>northstar</span></a>
+                <div class="auth-message">
+                    <span class="eyebrow">BANKING, WITH CLARITY</span>
+                    <h1>Your money.<br><em>In good hands.</em></h1>
+                    <p>A calmer way to see your money, move it, and stay in control.</p>
+                </div>
+                <div class="auth-foot"><span class="signal-dot"></span> Secure access to your account</div>
+            </div>
+            <div class="auth-panel">
+                <div class="auth-card">
+                    <div class="mobile-brand brand"><span class="brand-mark">N</span><span>northstar</span></div>
+                    <div class="auth-heading"><span class="eyebrow" id="auth-eyebrow">WELCOME BACK</span>
+                        <h2 id="auth-title">Sign in to your account</h2>
+                        <p id="auth-description">Enter your details to continue.</p>
+                    </div>
+                    <div class="auth-tabs" role="tablist" aria-label="Account access">
+                        <button class="auth-tab is-active" type="button" data-auth-mode="login" role="tab"
+                            aria-selected="true">Sign in</button>
+                        <button class="auth-tab" type="button" data-auth-mode="register" role="tab"
+                            aria-selected="false">Create account</button>
+                    </div>
+                    <form id="auth-form" class="form-stack">
+                        <label class="field hidden" id="name-field"><span>Full name</span><input name="name"
+                                autocomplete="name" minlength="2" placeholder="Your name"></label>
+                        <label class="field"><span>Email address</span><input name="email" type="email"
+                                autocomplete="email" required placeholder="you@example.com"></label>
+                        <label class="field"><span>Password</span><input name="password" type="password"
+                                autocomplete="current-password" minlength="6" required
+                                placeholder="At least 6 characters"></label>
+                        <div class="notice hidden" id="auth-error" role="alert"></div>
+                        <button class="button button-primary button-wide" id="auth-submit" type="submit">Sign in <span
+                                aria-hidden="true">→</span></button>
+                    </form>
+                    <p class="fine-print">By continuing, you agree to the terms that govern your account.</p>
+                </div>
+            </div>
+        </section>
+
+        <section class="workspace hidden" id="bank-view">
+            <aside class="sidebar" id="sidebar">
+                <a class="brand" href="#overview" aria-label="Northstar overview"><span
+                        class="brand-mark">N</span><span>northstar</span></a>
+                <div class="side-label">YOUR MONEY</div>
+                <nav class="main-nav" aria-label="Main navigation">
+                    <button class="nav-item is-active" data-page="overview"><span class="nav-icon">◫</span>
+                        Overview</button>
+                    <button class="nav-item" data-page="activity"><span class="nav-icon">↗</span> Activity</button>
+                    <button class="nav-item" data-page="payments"><span class="nav-icon">⇄</span> Move money</button>
+                    <button class="nav-item" data-page="settings"><span class="nav-icon">◎</span> Account
+                        settings</button>
+                    <button class="nav-item hidden" data-page="admin" id="admin-nav"><span class="nav-icon">⌘</span>
+                        Admin</button>
+                </nav>
+                <div class="sidebar-bottom">
+                    <div class="help-panel"><span class="help-icon">?</span>
+                        <div><strong>Need a hand?</strong><span>We're here to help.</span></div><span
+                            class="help-arrow">↗</span>
+                    </div>
+                    <button class="profile-button" id="profile-menu" type="button"><span class="avatar"
+                            id="user-avatar">N</span><span class="profile-copy"><strong id="user-name">Your
+                                account</strong><small id="user-email"></small></span><span
+                            class="profile-dots">···</span></button>
+                </div>
+            </aside>
+            <section class="main-column">
+                <header class="topbar"><button class="icon-button menu-toggle" id="menu-toggle"
+                        aria-label="Toggle menu">☰</button>
+                    <div class="breadcrumb">Personal banking <span>/</span> <strong
+                            id="breadcrumb-page">Overview</strong></div>
+                    <div class="topbar-actions"><span class="secure-tag"><span class="signal-dot"></span> Your account
+                            is secure</span><button class="icon-button" id="logout-button" title="Sign out"
+                            aria-label="Sign out">↗</button></div>
+                </header>
+                <div class="content" id="page-content"></div>
+                <footer class="app-footer"><span>© 2026 Northstar Financial</span><span><span class="signal-dot"></span>
+                        All systems operational</span></footer>
+            </section>
+        </section>
+        <div class="toast" id="toast" role="status"></div>
+        <dialog id="action-dialog" class="action-dialog">
+            <form id="action-form" method="dialog">
+                <div class="dialog-top"><span class="eyebrow" id="dialog-eyebrow">MOVE MONEY</span><button type="button"
+                        class="icon-button dialog-close" aria-label="Close">×</button></div>
+                <h2 id="dialog-title">Send a transfer</h2>
+                <p class="dialog-copy" id="dialog-copy">Move money securely to another Northstar account.</p>
+                <div id="dialog-fields" class="form-stack"></div>
+                <div class="dialog-error notice hidden" id="dialog-error" role="alert"></div>
+                <div class="dialog-actions"><button type="button"
+                        class="button button-quiet dialog-close">Cancel</button><button class="button button-primary"
+                        id="dialog-submit" type="submit">Continue <span aria-hidden="true">→</span></button></div>
+            </form>
+        </dialog>
+    </main>
+</body>
+
+</html>

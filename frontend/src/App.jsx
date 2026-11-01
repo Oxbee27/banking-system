@@ -1,0 +1,1410 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
+
+const actionConfigs = {
+  transfer: {
+    eyebrow: "SEND MONEY",
+    title: "Send a transfer",
+    copy: "Move money securely to another FineBank account.",
+    button: "Review transfer",
+  },
+  deposit: {
+    eyebrow: "ADD MONEY",
+    title: "Deposit funds",
+    copy: "Add funds to your account balance.",
+    button: "Deposit funds",
+  },
+  withdraw: {
+    eyebrow: "WITHDRAW",
+    title: "Withdraw funds",
+    copy: "Withdraw money from your available balance.",
+    button: "Withdraw funds",
+  },
+  pin: {
+    eyebrow: "SECURITY",
+    title: "Create transaction PIN",
+    copy: "Set a 4-digit PIN to authorize transactions.",
+    button: "Create PIN",
+  },
+  "update-pin": {
+    eyebrow: "SECURITY",
+    title: "Update transaction PIN",
+    copy: "Enter your current PIN and choose a new 4-digit PIN.",
+    button: "Update PIN",
+  },
+  "admin-credit": {
+    eyebrow: "ADMINISTRATION",
+    title: "Credit an account",
+    copy: "Enter the user's ID and the amount to credit.",
+    button: "Credit account",
+  },
+};
+
+const money = (amount) =>
+  new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency: "NGN",
+  }).format(Number(amount) || 0);
+
+const dateLabel = (value) => {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? "Recently"
+    : new Intl.DateTimeFormat(undefined, {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      }).format(date);
+};
+
+const tokenPayload = (token) => {
+  try {
+    const payload = token.split(".")[1];
+    const decoded = atob(payload.replace(/-/g, "+").replace(/_/g, "/"));
+    return JSON.parse(decoded);
+  } catch {
+    return null;
+  }
+};
+
+const api = async (path, options = {}, token) => {
+  const headers = {
+    Accept: "application/json",
+    ...(options.body ? { "Content-Type": "application/json" } : {}),
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...options.headers,
+  };
+
+  try {
+    const response = await fetch(`${API_BASE}${path}`, {
+      ...options,
+      headers,
+      body: options.body ? JSON.stringify(options.body) : undefined,
+    });
+
+    const payload = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      throw new Error(payload.message || "The request could not be completed.");
+    }
+
+    return payload;
+  } catch (error) {
+    if (error instanceof Error && error.message) {
+      throw error;
+    }
+    throw new Error("Could not reach the banking service.");
+  }
+};
+
+const actionTemplate = (
+  name,
+  label,
+  type = "text",
+  placeholder = "",
+  extra = {},
+) => {
+  const required = extra.required === false ? "" : "required";
+  const min = extra.min ? `min="${extra.min}"` : "";
+  const step = extra.step ? `step="${extra.step}"` : "";
+  const maxLength = extra.maxLength ? `maxLength="${extra.maxLength}"` : "";
+  const pattern = extra.pattern ? `pattern="${extra.pattern}"` : "";
+  const inputMode = extra.inputMode ? `inputMode="${extra.inputMode}"` : "";
+
+  return {
+    name,
+    label,
+    type,
+    placeholder,
+    required,
+    min,
+    step,
+    maxLength,
+    pattern,
+    inputMode,
+  };
+};
+
+function App() {
+  const storedToken =
+    typeof window !== "undefined" ? localStorage.getItem("FINEBANK_token") : "";
+  const [token, setToken] = useState(storedToken || "");
+  const [authMode, setAuthMode] = useState("login");
+  const [authKind, setAuthKind] = useState("customer");
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [authError, setAuthError] = useState("");
+  const [authSubmitting, setAuthSubmitting] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const authSubmittingRef = useRef(false);
+  const [page, setPage] = useState("overview");
+  const [filter, setFilter] = useState("all");
+  const [user, setUser] = useState(null);
+  const [balance, setBalance] = useState({ accountNumber: "", balance: 0 });
+  const [transactions, setTransactions] = useState([]);
+  const [dialogAction, setDialogAction] = useState("transfer");
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [dialogError, setDialogError] = useState("");
+  const [toast, setToast] = useState("");
+  const [toastVisible, setToastVisible] = useState(false);
+  const handledReference = useRef("");
+
+  useEffect(() => {
+    if (token) {
+      void loadAccount();
+    }
+  }, [token]);
+
+  useEffect(() => {
+    const reference = new URLSearchParams(window.location.search).get(
+      "reference",
+    );
+    if (!token || !reference || handledReference.current === reference) return;
+    handledReference.current = reference;
+
+    const confirmDeposit = async () => {
+      try {
+        const result = await api(
+          `/banking/deposit/verify?reference=${encodeURIComponent(reference)}`,
+          {},
+          token,
+        );
+        window.history.replaceState({}, "", window.location.pathname);
+        showToast(result.message || "Deposit confirmed successfully.");
+        await loadAccount();
+      } catch (error) {
+        handledReference.current = "";
+        window.history.replaceState({}, "", window.location.pathname);
+        showToast(error.message || "We could not confirm that deposit.");
+      }
+    };
+
+    void confirmDeposit();
+  }, [token]);
+
+  useEffect(() => {
+    if (!toast) return;
+    setToastVisible(true);
+    const timer = setTimeout(() => setToastVisible(false), 3200);
+    return () => clearTimeout(timer);
+  }, [toast]);
+
+  const showToast = (message) => {
+    setToast(message);
+  };
+
+  const loadAccount = async () => {
+    if (!token) return;
+
+    try {
+      const [profileResult, balanceResult, transactionsResult] =
+        await Promise.all([
+          api("/user/profile", {}, token),
+          api("/banking/balance", {}, token),
+          api("/banking/transactions", {}, token),
+        ]);
+
+      if (profileResult?.data) {
+        setUser((prev) => ({ ...prev, ...profileResult.data }));
+      }
+      if (balanceResult?.data) {
+        setBalance(balanceResult.data);
+      }
+      if (transactionsResult?.data) {
+        setTransactions(transactionsResult.data || []);
+      }
+    } catch (error) {
+      console.error(error);
+    }
+  };
+
+  const clearSession = () => {
+    setToken("");
+    localStorage.removeItem("FINEBANK_token");
+    setUser(null);
+    setBalance({ accountNumber: "", balance: 0 });
+    setTransactions([]);
+    setPage("overview");
+    setFilter("all");
+  };
+
+  const handleAuthSubmit = async (e) => {
+    e.preventDefault();
+
+    if (authSubmittingRef.current) return;
+
+    authSubmittingRef.current = true;
+    setAuthSubmitting(true);
+    setAuthError("");
+    const formData = new FormData(e.currentTarget);
+    const payload = Object.fromEntries(formData.entries());
+    const endpoint =
+      authMode === "login"
+        ? "/auth/login"
+        : authKind === "admin"
+          ? "/auth/createAdmin"
+          : "/auth/register";
+
+    try {
+      const result = await api(
+        endpoint,
+        { method: "POST", body: payload },
+        token,
+      );
+
+      if (authMode === "login") {
+        const nextToken = result.token;
+        setToken(nextToken);
+        localStorage.setItem("FINEBANK_token", nextToken);
+        setUser({ email: payload.email, ...tokenPayload(nextToken) });
+        showToast("Welcome back. You are signed in successfully.");
+      } else {
+        setAuthError(
+          authKind === "admin"
+            ? "Admin account created. Sign in with your new credentials."
+            : "Account created. Sign in to access your account.",
+        );
+        setAuthMode("login");
+        showToast(
+          authKind === "admin"
+            ? "Your admin account has been created successfully. Please sign in."
+            : "Your account has been created successfully. Please sign in.",
+        );
+        showToast(
+          authKind === "admin"
+            ? "Admin account created successfully. You can now sign in."
+            : "Account created successfully. Please sign in to continue.",
+        );
+      }
+    } catch (error) {
+      const message = error.message || "";
+
+      if (/already exists|duplicate|unique/i.test(message)) {
+        setAuthError(
+          "An account with this email already exists. Please sign in instead.",
+        );
+      } else if (authMode === "login") {
+        setAuthError(
+          "We couldn't sign you in. Please check your details and try again.",
+        );
+      } else {
+        setAuthError(
+          "We couldn't create your account. Please check your details and try again.",
+        );
+      }
+    } finally {
+      authSubmittingRef.current = false;
+      setAuthSubmitting(false);
+    }
+  };
+
+  const handleActionSubmit = async (e) => {
+    e.preventDefault();
+    const formData = new FormData(e.currentTarget);
+    const values = Object.fromEntries(formData.entries());
+    const action = dialogAction;
+
+    if (values.amount) values.amount = Number(values.amount);
+    if (values.userId) values.userId = Number(values.userId);
+
+    try {
+      let result;
+      if (action === "transfer") {
+        result = await api(
+          "/banking/transfer",
+          { method: "POST", body: values },
+          token,
+        );
+      } else if (action === "deposit") {
+        result = await api(
+          "/banking/deposit/initialize",
+          { method: "POST", body: values },
+          token,
+        );
+        const authorizationUrl = result?.data?.authorizationUrl;
+        if (!authorizationUrl) {
+          throw new Error("Paystack did not return a checkout link.");
+        }
+        window.location.assign(authorizationUrl);
+        return;
+      } else if (action === "withdraw") {
+        result = await api(
+          "/banking/withdraw",
+          { method: "POST", body: values },
+          token,
+        );
+      } else if (action === "pin") {
+        result = await api(
+          "/banking/pin",
+          { method: "POST", body: values },
+          token,
+        );
+      } else if (action === "update-pin") {
+        result = await api(
+          "/banking/pin",
+          { method: "PATCH", body: values },
+          token,
+        );
+      } else if (action === "admin-credit") {
+        result = await api(
+          `/banking/admin/users/${values.userId}/balance`,
+          { method: "PATCH", body: { amount: values.amount } },
+          token,
+        );
+      }
+
+      setDialogOpen(false);
+      showToast(result?.message || "Transaction completed successfully.");
+      await loadAccount();
+    } catch (error) {
+      setDialogError(error.message || "Something went wrong.");
+    }
+  };
+
+  const handlePageChange = (nextPage) => setPage(nextPage);
+
+  const userRole = user?.role || "user";
+  const userName = user?.name || user?.email || "Your account";
+
+  const pageContent = useMemo(() => {
+    const currentUserName = user?.name || user?.email || "there";
+
+    if (page === "activity") {
+      const filtered = transactions.filter((item) => {
+        if (filter === "all") return true;
+        return String(item.type || "")
+          .toLowerCase()
+          .includes(filter);
+      });
+
+      return (
+        <div className="page-enter">
+          <div className="page-head">
+            <div>
+              <span className="eyebrow">ACCOUNT ACTIVITY</span>
+              <h1>Your activity</h1>
+              <p>A clear view of money moving in and out of your account.</p>
+            </div>
+          </div>
+          <div className="section-heading">
+            <h2>
+              {filtered.length}{" "}
+              {filtered.length === 1 ? "transaction" : "transactions"}
+            </h2>
+            <div className="activity-filter">
+              {[
+                ["all", "All"],
+                ["transfer", "Transfers"],
+                ["deposit", "Deposits"],
+                ["withdrawal", "Withdrawals"],
+              ].map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  className={`filter-button ${filter === key ? "is-active" : ""}`}
+                  onClick={() => setFilter(key)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+          {filtered.length ? (
+            <table className="transaction-table">
+              <thead>
+                <tr>
+                  <th>Transaction</th>
+                  <th>Date</th>
+                  <th>Account</th>
+                  <th>Amount</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...filtered]
+                  .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+                  .map((item) => {
+                    const type = String(
+                      item.type || "transaction",
+                    ).toLowerCase();
+                    const inbound =
+                      item.receiverId === user?.id ||
+                      type === "deposit" ||
+                      type === "admin_credit";
+                    const label =
+                      type === "transfer"
+                        ? inbound
+                          ? "Transfer received"
+                          : "Transfer sent"
+                        : type === "withdrawal"
+                          ? "Cash withdrawal"
+                          : type === "deposit"
+                            ? "Account deposit"
+                            : type
+                                .replaceAll("_", " ")
+                                .replace(/^./, (letter) =>
+                                  letter.toUpperCase(),
+                                );
+                    const account = inbound
+                      ? item.senderAccount
+                      : item.receiverAccount;
+                    const amount = Number(item.amount) || 0;
+
+                    return (
+                      <tr key={item.id || `${item.type}-${item.createdAt}`}>
+                        <td>
+                          <div className="transaction-name">
+                            <span className="transaction-symbol">
+                              {inbound ? "↙" : "↗"}
+                            </span>
+                            <span>
+                              <strong>{label}</strong>
+                              <small>Reference #{item.id ?? "—"}</small>
+                            </span>
+                          </div>
+                        </td>
+                        <td>{dateLabel(item.createdAt)}</td>
+                        <td>
+                          {account ? `•• ${String(account).slice(-4)}` : "—"}
+                        </td>
+                        <td
+                          className={
+                            inbound ? "amount-positive" : "amount-negative"
+                          }
+                        >
+                          {inbound ? "+" : "−"}
+                          {money(amount)}
+                        </td>
+                        <td>
+                          <span className="status-pill">
+                            {item.status || "complete"}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+              </tbody>
+            </table>
+          ) : (
+            <div className="empty-state">
+              <strong>Nothing here yet</strong>
+              <p>Your account activity will appear here.</p>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    if (page === "payments") {
+      return (
+        <div className="page-enter">
+          <div className="page-head">
+            <div>
+              <span className="eyebrow">PAYMENTS</span>
+              <h1>Move your money</h1>
+              <p>Choose a transaction to get started.</p>
+            </div>
+          </div>
+          <div className="quick-grid payment-grid">
+            {[
+              [
+                "transfer",
+                "Send a transfer",
+                "Pay another FineBank account",
+                "↗",
+              ],
+              ["deposit", "Deposit funds", "Add money to your balance", "＋"],
+              ["withdraw", "Withdraw funds", "Withdraw from your balance", "↙"],
+            ].map(([action, title, desc, icon]) => (
+              <button
+                key={action}
+                type="button"
+                className="quick-action"
+                onClick={() => {
+                  setDialogAction(action);
+                  setDialogOpen(true);
+                  setDialogError("");
+                }}
+              >
+                <span className="quick-icon">{icon}</span>
+                <span>
+                  <strong>{title}</strong>
+                  <small>{desc}</small>
+                </span>
+              </button>
+            ))}
+          </div>
+          <div className="two-col">
+            <section className="surface">
+              <h2>Before you transfer</h2>
+              <p className="surface-intro">
+                Transfers require your 4-digit transaction PIN. Double-check the
+                recipient's account number before confirming.
+              </p>
+              <button
+                type="button"
+                className="button button-quiet"
+                onClick={() => {
+                  setDialogAction("pin");
+                  setDialogOpen(true);
+                  setDialogError("");
+                }}
+              >
+                Manage transaction PIN
+              </button>
+            </section>
+            <section className="surface">
+              <h2>Available balance</h2>
+              <p className="surface-intro">Your current account balance.</p>
+              <strong style={{ font: "700 23px Manrope, sans-serif" }}>
+                {money(balance?.balance)}
+              </strong>
+            </section>
+          </div>
+        </div>
+      );
+    }
+
+    if (page === "settings") {
+      return (
+        <div className="page-enter">
+          <div className="page-head">
+            <div>
+              <span className="eyebrow">YOUR PROFILE</span>
+              <h1>Account settings</h1>
+              <p>Your personal account information and security preferences.</p>
+            </div>
+          </div>
+          <div className="two-col">
+            <section className="surface">
+              <h2>Personal details</h2>
+              <p className="surface-intro">
+                Details associated with your FineBank account.
+              </p>
+              <div className="detail-stack">
+                <div className="account-detail">
+                  <span>Full name</span>
+                  <strong>{user?.name || "Not available"}</strong>
+                </div>
+                <div className="account-detail">
+                  <span>Email address</span>
+                  <strong>{user?.email || "Not available"}</strong>
+                </div>
+                <div className="account-detail">
+                  <span>Account number</span>
+                  <strong>
+                    {balance?.accountNumber ||
+                      user?.accountNumber ||
+                      "Not available"}
+                  </strong>
+                </div>
+                <div className="account-detail">
+                  <span>Account type</span>
+                  <strong>
+                    {userRole === "admin" ? "Administrator" : "Personal"}
+                  </strong>
+                </div>
+              </div>
+            </section>
+            <section className="surface">
+              <h2>Transaction security</h2>
+              <p className="surface-intro">
+                Your PIN is required to authorize transfers and withdrawals.
+              </p>
+              <div className="detail-stack">
+                <div className="account-detail">
+                  <span>Transaction PIN</span>
+                  <strong>••••</strong>
+                </div>
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  gap: 8,
+                  flexWrap: "wrap",
+                  marginTop: 14,
+                }}
+              >
+                <button
+                  type="button"
+                  className="button button-primary"
+                  onClick={() => {
+                    setDialogAction("pin");
+                    setDialogOpen(true);
+                    setDialogError("");
+                  }}
+                >
+                  Create PIN
+                </button>
+                <button
+                  type="button"
+                  className="button button-quiet"
+                  onClick={() => {
+                    setDialogAction("update-pin");
+                    setDialogOpen(true);
+                    setDialogError("");
+                  }}
+                >
+                  Update PIN
+                </button>
+              </div>
+            </section>
+          </div>
+        </div>
+      );
+    }
+
+    if (page === "admin" && userRole === "admin") {
+      return (
+        <div className="page-enter">
+          <div className="page-head">
+            <div>
+              <span className="eyebrow">ADMINISTRATION</span>
+              <h1>Admin console</h1>
+              <p>Administrative operations for account servicing.</p>
+            </div>
+          </div>
+          <div className="two-col">
+            <section className="surface admin-highlight">
+              <h2>Credit a user account</h2>
+              <p className="surface-intro">
+                Credit an account by its user ID. This action is recorded as an
+                admin credit transaction.
+              </p>
+              <button
+                type="button"
+                className="button button-primary"
+                onClick={() => {
+                  setDialogAction("admin-credit");
+                  setDialogOpen(true);
+                  setDialogError("");
+                }}
+              >
+                Credit account
+              </button>
+            </section>
+            <section className="surface">
+              <h2>Admin account</h2>
+              <p className="surface-intro">
+                Signed in with administrator privileges.
+              </p>
+              <div className="account-detail">
+                <span>Administrator</span>
+                <strong>{user?.name || user?.email || "Admin"}</strong>
+              </div>
+            </section>
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div className="page-enter">
+        <div className="page-head">
+          <div>
+            <span className="eyebrow">ACCOUNT OVERVIEW</span>
+            <h1>
+              Good{" "}
+              {new Date().getHours() < 12
+                ? "morning"
+                : new Date().getHours() < 18
+                  ? "afternoon"
+                  : "evening"}
+              , {String(currentUserName).split(" ")[0]}.
+            </h1>
+            <p>Here’s what’s happening with your money.</p>
+          </div>
+        </div>
+
+        <section className="balance-panel">
+          <div className="balance-top">
+            <span className="balance-label">Total available balance</span>
+            <span className="balance-chip">PERSONAL ACCOUNT</span>
+          </div>
+          <div className="balance-amount">{money(balance?.balance)}</div>
+          <div className="balance-account">
+            Account number{" "}
+            <strong>
+              {balance?.accountNumber || user?.accountNumber || "Unavailable"}
+            </strong>
+          </div>
+          <div className="balance-actions">
+            <button
+              type="button"
+              className="button button-light"
+              onClick={() => {
+                setDialogAction("transfer");
+                setDialogOpen(true);
+                setDialogError("");
+              }}
+            >
+              Send money
+            </button>
+            <button
+              type="button"
+              className="button button-outline-light"
+              onClick={() => {
+                setDialogAction("deposit");
+                setDialogOpen(true);
+                setDialogError("");
+              }}
+            >
+              Add money <span aria-hidden="true">＋</span>
+            </button>
+          </div>
+        </section>
+
+        <div className="quick-grid">
+          {[
+            ["transfer", "Transfer", "Send to an account", "↗"],
+            ["deposit", "Deposit", "Add money", "＋"],
+            ["withdraw", "Withdraw", "Move money out", "↙"],
+            ["pin", "Transaction PIN", "Manage your PIN", "◎"],
+          ].map(([action, title, desc, icon]) => (
+            <button
+              key={action}
+              type="button"
+              className="quick-action"
+              onClick={() => {
+                setDialogAction(action);
+                setDialogOpen(true);
+                setDialogError("");
+              }}
+            >
+              <span className="quick-icon">{icon}</span>
+              <span>
+                <strong>{title}</strong>
+                <small>{desc}</small>
+              </span>
+            </button>
+          ))}
+        </div>
+
+        <div className="section-heading">
+          <h2>Recent activity</h2>
+          <button
+            type="button"
+            className="text-button"
+            onClick={() => setPage("activity")}
+          >
+            View all activity
+          </button>
+        </div>
+
+        {transactions.length ? (
+          <table className="transaction-table">
+            <thead>
+              <tr>
+                <th>Transaction</th>
+                <th>Date</th>
+                <th>Account</th>
+                <th>Amount</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[...transactions]
+                .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+                .slice(0, 5)
+                .map((item) => {
+                  const type = String(item.type || "transaction").toLowerCase();
+                  const inbound =
+                    item.receiverId === user?.id ||
+                    type === "deposit" ||
+                    type === "admin_credit";
+                  const label =
+                    type === "transfer"
+                      ? inbound
+                        ? "Transfer received"
+                        : "Transfer sent"
+                      : type === "withdrawal"
+                        ? "Cash withdrawal"
+                        : type === "deposit"
+                          ? "Account deposit"
+                          : type
+                              .replaceAll("_", " ")
+                              .replace(/^./, (letter) => letter.toUpperCase());
+                  const account = inbound
+                    ? item.senderAccount
+                    : item.receiverAccount;
+                  const amount = Number(item.amount) || 0;
+
+                  return (
+                    <tr key={item.id || `${item.type}-${item.createdAt}`}>
+                      <td>
+                        <div className="transaction-name">
+                          <span className="transaction-symbol">
+                            {inbound ? "↙" : "↗"}
+                          </span>
+                          <span>
+                            <strong>{label}</strong>
+                            <small>Reference #{item.id ?? "—"}</small>
+                          </span>
+                        </div>
+                      </td>
+                      <td>{dateLabel(item.createdAt)}</td>
+                      <td>
+                        {account ? `•• ${String(account).slice(-4)}` : "—"}
+                      </td>
+                      <td
+                        className={
+                          inbound ? "amount-positive" : "amount-negative"
+                        }
+                      >
+                        {inbound ? "+" : "−"}
+                        {money(amount)}
+                      </td>
+                      <td>
+                        <span className="status-pill">
+                          {item.status || "complete"}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+            </tbody>
+          </table>
+        ) : (
+          <div className="empty-state">
+            <strong>Nothing here yet</strong>
+            <p>Your account activity will appear here.</p>
+          </div>
+        )}
+      </div>
+    );
+  }, [page, filter, transactions, user, balance, userRole]);
+
+  const authTabs = [
+    { key: "login", label: "Sign in" },
+    { key: "register", label: "Create account" },
+  ];
+
+  return (
+    <>
+      {!token ? (
+        <main className="auth-shell">
+          <div className="phone-shell">
+            <div className="phone-notch" aria-hidden="true" />
+            <section className="auth-layout" id="auth-view">
+              <div className="auth-brand">
+                <a className="brand" href="/" aria-label="FineBank home">
+                  <span className="brand-mark">F</span>
+                  <span>FINEBANK</span>
+                </a>
+                <div className="auth-message">
+                  <span className="eyebrow">WELCOME TO FINEBANK</span>
+                  <h1>
+                    Banking for
+                    <br />
+                    everyday life.
+                  </h1>
+                  <p>
+                    Keep track of your money, send a payment, or take care of a
+                    bill. We’re here when you need us.
+                  </p>
+                </div>
+                <div className="auth-foot">
+                  <span className="signal-dot" /> Secure access to your account
+                </div>
+              </div>
+
+              <div className="auth-panel">
+                <div className="auth-card">
+                  <div className="mobile-brand brand">
+                    <span className="brand-mark">F</span>
+                    <span>FINEBANK</span>
+                  </div>
+                  <div className="auth-heading">
+                    <span className="eyebrow">
+                      {authKind === "admin" && authMode === "register"
+                        ? "ADMIN ACCESS"
+                        : authMode === "register"
+                          ? "GET STARTED"
+                          : "WELCOME BACK"}
+                    </span>
+                    <h2>
+                      {authKind === "admin" && authMode === "register"
+                        ? "Create an admin account"
+                        : authMode === "register"
+                          ? "Open your account"
+                          : "Sign in to your account"}
+                    </h2>
+                    <p>
+                      {authKind === "admin" && authMode === "register"
+                        ? "Create a privileged account using your admin creation key."
+                        : authMode === "register"
+                          ? "A few details and you’re ready to go."
+                          : "Enter your details to continue."}
+                    </p>
+                  </div>
+
+                  <div
+                    className="auth-tabs"
+                    role="tablist"
+                    aria-label="Account access"
+                  >
+                    {authTabs.map((tab) => (
+                      <button
+                        key={tab.key}
+                        type="button"
+                        className={`auth-tab ${authMode === tab.key ? "is-active" : ""}`}
+                        onClick={() => {
+                          setAuthMode(tab.key);
+                          setAuthError("");
+                          setShowPassword(false);
+                        }}
+                      >
+                        {tab.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <form className="form-stack" onSubmit={handleAuthSubmit}>
+                    {authMode === "register" && (
+                      <label className="field">
+                        <span>Full name</span>
+                        <input
+                          name="name"
+                          autoComplete="name"
+                          minLength={2}
+                          placeholder="Your name"
+                          required
+                        />
+                      </label>
+                    )}
+
+                    {authKind === "admin" && authMode === "register" && (
+                      <label className="field">
+                        <span>Admin creation key</span>
+                        <input
+                          name="adminCode"
+                          type="password"
+                          autoComplete="off"
+                          placeholder="Enter your admin key"
+                          required
+                        />
+                      </label>
+                    )}
+
+                    <label className="field">
+                      <span>Email address</span>
+                      <input
+                        name="email"
+                        type="email"
+                        autoComplete="email"
+                        required
+                        placeholder="you@example.com"
+                      />
+                    </label>
+
+                    <div className="field">
+                      <label htmlFor="account-password">Password</label>
+                      <div className="password-input-wrap">
+                        <input
+                          id="account-password"
+                          name="password"
+                          type={showPassword ? "text" : "password"}
+                          autoComplete={
+                            authMode === "register"
+                              ? "new-password"
+                              : "current-password"
+                          }
+                          minLength={6}
+                          required
+                          placeholder="At least 6 characters"
+                        />
+                        <button
+                          className="password-toggle"
+                          type="button"
+                          onClick={() => setShowPassword((visible) => !visible)}
+                          aria-label={
+                            showPassword ? "Hide password" : "Show password"
+                          }
+                        >
+                          {showPassword ? "Hide" : "Show"}
+                        </button>
+                      </div>
+                    </div>
+
+                    {authError && (
+                      <div className="notice" role="alert">
+                        {authError}
+                      </div>
+                    )}
+
+                    <button
+                      className="button button-primary button-wide"
+                      type="submit"
+                      disabled={authSubmitting}
+                    >
+                      {authKind === "admin"
+                        ? authMode === "register"
+                          ? "Create admin account"
+                          : "Sign in"
+                        : authMode === "register"
+                          ? "Create account"
+                          : "Sign in"}{" "}
+                    </button>
+                  </form>
+
+                  <button
+                    type="button"
+                    className="text-button admin-link"
+                    onClick={() => {
+                      setAuthKind((prev) =>
+                        prev === "customer" ? "admin" : "customer",
+                      );
+                      setAuthError("");
+                    }}
+                  >
+                    {authKind === "admin"
+                      ? "Back to customer access"
+                      : "Create an admin account"}
+                  </button>
+
+                  <p className="fine-print">
+                    By continuing, you agree to the terms that govern your
+                    account.
+                  </p>
+                </div>
+              </div>
+            </section>
+          </div>
+        </main>
+      ) : (
+        <main>
+          <section className="workspace" id="bank-view">
+            <aside
+              className={`sidebar ${menuOpen ? "is-open" : ""}`}
+              id="sidebar"
+            >
+              <a
+                className="brand"
+                href="#overview"
+                aria-label="FineBank overview"
+              >
+                <span className="brand-mark">F</span>
+                <span>FINEBANK</span>
+              </a>
+              <div className="side-label">YOUR MONEY</div>
+              <nav className="main-nav" aria-label="Main navigation">
+                {[
+                  ["overview", "Overview"],
+                  ["activity", "Activity"],
+                  ["payments", "Move money"],
+                  ["settings", "Account settings"],
+                  ...(userRole === "admin" ? [["admin", "Admin"]] : []),
+                ].map(([key, label]) => (
+                  <button
+                    key={key}
+                    type="button"
+                    className={`nav-item ${page === key ? "is-active" : ""}`}
+                    onClick={() => {
+                      handlePageChange(key);
+                      setMenuOpen(false);
+                    }}
+                  >
+                    <span className="nav-icon">
+                      {key === "overview"
+                        ? "◫"
+                        : key === "activity"
+                          ? "↗"
+                          : key === "payments"
+                            ? "⇄"
+                            : key === "settings"
+                              ? "◎"
+                              : "⌘"}
+                    </span>
+                    {label}
+                  </button>
+                ))}
+              </nav>
+
+              <div className="sidebar-bottom">
+                <div className="help-panel">
+                  <span className="help-icon">?</span>
+                  <div>
+                    <strong>Need a hand?</strong>
+                    <span>We're here to help.</span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="profile-button"
+                  onClick={() => handlePageChange("settings")}
+                >
+                  <span className="avatar">
+                    {(userName || "N").charAt(0).toUpperCase()}
+                  </span>
+                  <span className="profile-copy">
+                    <strong>{userName}</strong>
+                    <small>{user?.email || ""}</small>
+                  </span>
+                  <span className="profile-dots">···</span>
+                </button>
+              </div>
+            </aside>
+
+            <section className="main-column">
+              <header className="topbar">
+                <button
+                  className="icon-button menu-toggle"
+                  type="button"
+                  aria-label="Toggle menu"
+                  aria-expanded={menuOpen}
+                  aria-controls="sidebar"
+                  onClick={() => setMenuOpen((isOpen) => !isOpen)}
+                >
+                  {menuOpen ? "×" : "☰"}
+                </button>
+                <div className="breadcrumb">
+                  Personal banking <span>/</span>{" "}
+                  <strong>
+                    {page === "overview"
+                      ? "Overview"
+                      : page === "activity"
+                        ? "Activity"
+                        : page === "payments"
+                          ? "Move money"
+                          : page === "settings"
+                            ? "Account settings"
+                            : "Admin"}
+                  </strong>
+                </div>
+                <div className="topbar-actions">
+                  <span className="secure-tag">
+                    <span className="signal-dot" /> Your account is secure
+                  </span>
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label="Sign out"
+                    onClick={() => {
+                      clearSession();
+                      setAuthMode("login");
+                      setAuthKind("customer");
+                    }}
+                  >
+                    ↗
+                  </button>
+                </div>
+              </header>
+              <div className="content">{pageContent}</div>
+              <footer className="app-footer">
+                <span>© 2026 FineBank Financial</span>
+                <span>
+                  <span className="signal-dot" /> All systems operational
+                </span>
+              </footer>
+            </section>
+          </section>
+        </main>
+      )}
+
+      {toast && (
+        <div
+          className={`toast ${toastVisible ? "is-visible" : ""}`}
+          role="status"
+        >
+          {toast}
+        </div>
+      )}
+
+      {dialogOpen && (
+        <dialog open className="action-dialog">
+          <form onSubmit={handleActionSubmit}>
+            <div className="dialog-top">
+              <span className="eyebrow">
+                {actionConfigs[dialogAction]?.eyebrow}
+              </span>
+              <button
+                type="button"
+                className="icon-button dialog-close"
+                aria-label="Close"
+                onClick={() => setDialogOpen(false)}
+              >
+                ×
+              </button>
+            </div>
+
+            <h2>{actionConfigs[dialogAction]?.title}</h2>
+            <p className="dialog-copy">{actionConfigs[dialogAction]?.copy}</p>
+
+            <div className="form-stack">
+              {dialogAction === "transfer" && (
+                <>
+                  <label className="field">
+                    <span>Recipient account number</span>
+                    <input
+                      name="accountNumber"
+                      placeholder="10-digit account number"
+                      pattern="[0-9]{10}"
+                      required
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Amount</span>
+                    <input
+                      name="amount"
+                      type="number"
+                      min="0.01"
+                      step="0.01"
+                      placeholder="0.00"
+                      required
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Transaction PIN</span>
+                    <input
+                      name="pin"
+                      type="password"
+                      maxLength={4}
+                      pattern="[0-9]{4}"
+                      inputMode="numeric"
+                      placeholder="4-digit PIN"
+                      required
+                    />
+                  </label>
+                </>
+              )}
+
+              {dialogAction === "deposit" && (
+                <label className="field">
+                  <span>Amount</span>
+                  <input
+                    name="amount"
+                    type="number"
+                    min="0.01"
+                    step="0.01"
+                    placeholder="0.00"
+                    required
+                  />
+                </label>
+              )}
+
+              {dialogAction === "withdraw" && (
+                <>
+                  <label className="field">
+                    <span>Amount</span>
+                    <input
+                      name="amount"
+                      type="number"
+                      min="0.01"
+                      step="0.01"
+                      placeholder="0.00"
+                      required
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Transaction PIN</span>
+                    <input
+                      name="pin"
+                      type="password"
+                      maxLength={4}
+                      pattern="[0-9]{4}"
+                      inputMode="numeric"
+                      placeholder="4-digit PIN"
+                      required
+                    />
+                  </label>
+                </>
+              )}
+
+              {dialogAction === "pin" && (
+                <label className="field">
+                  <span>New transaction PIN</span>
+                  <input
+                    name="pin"
+                    type="password"
+                    maxLength={4}
+                    pattern="[0-9]{4}"
+                    inputMode="numeric"
+                    placeholder="4 digits"
+                    required
+                  />
+                </label>
+              )}
+
+              {dialogAction === "update-pin" && (
+                <>
+                  <label className="field">
+                    <span>Current PIN</span>
+                    <input
+                      name="currentPin"
+                      type="password"
+                      maxLength={4}
+                      pattern="[0-9]{4}"
+                      inputMode="numeric"
+                      placeholder="4 digits"
+                      required
+                    />
+                  </label>
+                  <label className="field">
+                    <span>New PIN</span>
+                    <input
+                      name="newPin"
+                      type="password"
+                      maxLength={4}
+                      pattern="[0-9]{4}"
+                      inputMode="numeric"
+                      placeholder="4 digits"
+                      required
+                    />
+                  </label>
+                </>
+              )}
+
+              {dialogAction === "admin-credit" && (
+                <>
+                  <label className="field">
+                    <span>User ID</span>
+                    <input
+                      name="userId"
+                      type="number"
+                      min="1"
+                      step="1"
+                      placeholder="Account user ID"
+                      required
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Amount</span>
+                    <input
+                      name="amount"
+                      type="number"
+                      min="0.01"
+                      step="0.01"
+                      placeholder="0.00"
+                      required
+                    />
+                  </label>
+                </>
+              )}
+            </div>
+
+            {dialogError && (
+              <div className="dialog-error notice" role="alert">
+                {dialogError}
+              </div>
+            )}
+
+            <div className="dialog-actions">
+              <button
+                type="button"
+                className="button button-quiet dialog-close"
+                onClick={() => setDialogOpen(false)}
+              >
+                Cancel
+              </button>
+              <button className="button button-primary" type="submit">
+                {actionConfigs[dialogAction]?.button}{" "}
+              </button>
+            </div>
+          </form>
+        </dialog>
+      )}
+    </>
+  );
+}
+
+export default App;

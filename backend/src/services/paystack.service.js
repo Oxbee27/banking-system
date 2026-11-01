@@ -21,17 +21,41 @@ const getPaystackHeaders = () => ({
 });
 
 const paystackRequest = async (path, method = "GET", body = null) => {
-  const response = await fetch(`${PAYSTACK_BASE_URL}${path}`, {
-    method,
-    headers: getPaystackHeaders(),
-    ...(body ? { body: JSON.stringify(body) } : {}),
-  });
+  let response;
 
-  const payload = await response.json();
+  try {
+    response = await fetch(`${PAYSTACK_BASE_URL}${path}`, {
+      method,
+      headers: getPaystackHeaders(),
+      ...(body ? { body: JSON.stringify(body) } : {}),
+      signal: AbortSignal.timeout(15000),
+    });
+  } catch (cause) {
+    const timedOut =
+      cause.name === "TimeoutError" || cause.name === "AbortError";
 
-  if (!response.ok || !payload.status) {
-    const error = new Error(payload.message || "Paystack request failed");
-    error.statusCode = response.status || 400;
+    const error = new Error(
+      timedOut
+        ? "Paystack request timed out. Please try again."
+        : "Unable to connect to Paystack. Please try again.",
+    );
+    error.statusCode = timedOut ? 504 : 502;
+    throw error;
+  }
+
+  let payload;
+
+  try {
+    payload = await response.json();
+  } catch {
+    const error = new Error("Paystack returned an invalid response.");
+    error.statusCode = 502;
+    throw error;
+  }
+
+  if (!response.ok || !payload || payload.status !== true) {
+    const error = new Error("Paystack could not process the request.");
+    error.statusCode = 502;
     throw error;
   }
 
@@ -59,7 +83,12 @@ const initializePayment = async ({ userId, amount }) => {
     throw error;
   }
   const amountKobo = Math.round(numericAmount * 100);
-  if (!Number.isSafeInteger(amountKobo) || amountKobo <= 0) {
+
+  if (
+    !Number.isSafeInteger(amountKobo) ||
+    amountKobo <= 0 ||
+    Math.abs(numericAmount * 100 - amountKobo) >= 1e-7
+  ) {
     const error = new Error("Amount is outside the supported range");
     error.statusCode = 400;
     throw error;
@@ -79,19 +108,36 @@ const initializePayment = async ({ userId, amount }) => {
     },
   });
 
-  const data = await paystackRequest("/transaction/initialize", "POST", {
-    email: user.email,
-    amount: amountKobo,
-    currency: "NGN",
-    reference,
-    callback_url:
-      process.env.PAYSTACK_CALLBACK_URL ||
-      `${process.env.FRONTEND_URL || "http://localhost:5173"}/`,
-    metadata: {
-      userId: user.id,
-      accountNumber: user.accountNumber,
-    },
-  });
+  let data;
+
+  try {
+    data = await paystackRequest("/transaction/initialize", "POST", {
+      email: user.email,
+      amount: amountKobo,
+      currency: "NGN",
+      reference,
+      callback_url:
+        process.env.PAYSTACK_CALLBACK_URL ||
+        `${process.env.FRONTEND_URL || "http://localhost:5173"}/`,
+      metadata: {
+        userId: user.id,
+        accountNumber: user.accountNumber,
+      },
+    });
+  } catch (error) {
+    try {
+      await updatePayment(payment.id, {
+        status: "failed",
+        gatewayResponse: {
+          message: error.message || "Paystack initialization failed",
+        },
+      });
+    } catch (persistenceError) {
+      error.paymentStatusUpdateFailed = true;
+    }
+
+    throw error;
+  }
 
   await updatePayment(payment.id, {
     accessCode: data.access_code,
@@ -112,6 +158,20 @@ const initializePayment = async ({ userId, amount }) => {
 
 const creditSuccessfulPayment = async (reference, eventData) =>
   db.sequelize.transaction(async (transaction) => {
+    if (
+      typeof reference !== "string" ||
+      !reference.trim() ||
+      !eventData ||
+      typeof eventData !== "object" ||
+      Array.isArray(eventData) ||
+      String(eventData.reference || "") !== reference ||
+      String(eventData.status || "").toLowerCase() !== "success"
+    ) {
+      const error = new Error("Invalid or unsuccessful Paystack payment data");
+      error.statusCode = 400;
+      throw error;
+    }
+
     const payment = await findPaymentByReference(reference, {
       transaction,
       lock: transaction.LOCK.UPDATE,
@@ -214,15 +274,38 @@ const verifyPayment = async (reference, userId) => {
     throw error;
   }
 
-  const data = await paystackRequest(`/transaction/verify/${reference}`);
-  if (data.status !== "success") {
-    await updatePayment(payment.id, {
-      status: "failed",
-      gatewayResponse: data,
-    });
+  const data = await paystackRequest(
+    `/transaction/verify/${encodeURIComponent(reference)}`
+  );
 
-    const error = new Error("Payment verification failed");
+  if (String(data.reference || "") !== reference) {
+    const error = new Error("Paystack returned a different payment reference");
     error.statusCode = 400;
+    throw error;
+  }
+
+  const paymentStatus = String(data.status || "").toLowerCase();
+
+  if (paymentStatus !== "success") {
+    const terminalFailureStatuses = ["failed", "abandoned"];
+
+    if (terminalFailureStatuses.includes(paymentStatus)) {
+      await updatePayment(payment.id, {
+        status: "failed",
+        gatewayResponse: data,
+      });
+    }
+
+    const error = new Error(
+      terminalFailureStatuses.includes(paymentStatus)
+        ? "Payment verification failed"
+        : "Payment is not complete yet. Please check again shortly."
+    );
+
+    error.statusCode = terminalFailureStatuses.includes(paymentStatus)
+      ? 400
+      : 202;
+
     throw error;
   }
 
@@ -247,7 +330,15 @@ const handleWebhook = async ({ rawBody, signature }) => {
     .createHmac("sha512", secret)
     .update(rawBody)
     .digest();
-  const providedSignature = Buffer.from(String(signature || ""), "hex");
+  const signatureText = String(signature || "");
+
+  if (!/^[a-fA-F0-9]{128}$/.test(signatureText)) {
+    const error = new Error("Invalid Paystack webhook signature");
+    error.statusCode = 401;
+    throw error;
+  }
+
+  const providedSignature = Buffer.from(signatureText, "hex");
 
   if (
     providedSignature.length !== expectedSignature.length ||
@@ -258,7 +349,22 @@ const handleWebhook = async ({ rawBody, signature }) => {
     throw error;
   }
 
-  const payload = JSON.parse(rawBody.toString("utf8"));
+  let payload;
+
+  try {
+    payload = JSON.parse(rawBody.toString("utf8"));
+  } catch (parseError) {
+    const error = new Error("Invalid Paystack webhook JSON");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    const error = new Error("Invalid Paystack webhook payload");
+    error.statusCode = 400;
+    throw error;
+  }
+
   const event = payload.event;
   const eventData = payload.data || {};
 

@@ -1,41 +1,56 @@
 const jwt = require("jsonwebtoken");
 
 const authenticate = (req, res, next) => {
-    try {
-        const authHeader = req.headers.authorization;
+  const authHeader = req.headers.authorization;
 
-        if (!authHeader) {
-            return res.status(401).json({
-                status: "error",
-                message: "Authorization header is required"
-            });
-        }
+  if (!authHeader || typeof authHeader !== "string") {
+    return res.status(401).json({
+      status: "error",
+      message: "Authentication required.",
+    });
+  }
 
-        const token = authHeader.split(" ")[1];
+  const parts = authHeader.trim().split(/\s+/);
 
-        if (!token) {
-            return res.status(401).json({
-                status: "error",
-                message: "Token is required"
-            });
-        }
+  if (
+    parts.length !== 2 ||
+    parts[0].toLowerCase() !== "bearer" ||
+    !parts[1]
+  ) {
+    return res.status(401).json({
+      status: "error",
+      message: "Invalid authorization format.",
+    });
+  }
 
-        const decoded = jwt.verify(
-            token,
-            process.env.JWT_SECRET
-        );
+  if (!process.env.JWT_SECRET) {
+    return res.status(500).json({
+      status: "error",
+      message: "Authentication service is not configured.",
+    });
+  }
 
-        req.user = decoded;
+  try {
+    const decoded = jwt.verify(parts[1], process.env.JWT_SECRET, {
+      algorithms: ["HS256"],
+    });
 
-        next();
-
-    } catch (error) {
-
-        return res.status(401).json({
-            status: "error",
-            message: "Invalid or expired token"
-        });
+    if (!decoded || !Number.isInteger(Number(decoded.id)) ||
+        Number(decoded.id) <= 0) {
+      return res.status(401).json({
+        status: "error",
+        message: "Invalid authentication token.",
+      });
     }
+
+    req.user = decoded;
+    next();
+  } catch (error) {
+    return res.status(401).json({
+      status: "error",
+      message: "Invalid or expired authentication token.",
+    });
+  }
 };
 
 module.exports = authenticate;

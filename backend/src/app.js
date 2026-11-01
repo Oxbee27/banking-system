@@ -1,4 +1,5 @@
 const express = require("express");
+const cors = require("cors");
 
 const logger = require("./middleware/logger");
 const errorHandler = require("./middleware/errorHandler");
@@ -8,6 +9,40 @@ const authRouter = require("./routes/auth.route");
 const bankingRouter = require("./routes/banking.route");
 
 const app = express();
+
+
+const allowedOrigins = new Set();
+
+if (process.env.FRONTEND_URL) {
+  try {
+    allowedOrigins.add(new URL(process.env.FRONTEND_URL).origin);
+  } catch {
+    throw new Error("FRONTEND_URL must be a valid URL");
+  }
+}
+
+if (process.env.NODE_ENV !== "production") {
+  allowedOrigins.add("http://localhost:5173");
+}
+
+
+
+// Trust the single reverse-proxy hop used by Render.
+app.set("trust proxy", 1);
+
+
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.has(origin)) {
+      return callback(null, true);
+    }
+
+    return callback(null, false);
+  },
+  methods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  optionsSuccessStatus: 204,
+}));
 
 app.use(
   express.json({

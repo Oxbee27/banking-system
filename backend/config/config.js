@@ -69,8 +69,8 @@ module.exports = {
   },
   test: {
     ...shared,
-    ...(databaseUrlEnvName ? { use_env_variable: databaseUrlEnvName } : {}),
-    database: process.env.DB_NAME_TEST || "database_test",
+    // Tests must never inherit the remote development/production DATABASE_URL.
+    database: process.env.DB_NAME_TEST || "banking_system_test",
   },
   production: productionConfig,
 };

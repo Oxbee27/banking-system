@@ -10,6 +10,13 @@ const adminCreditBalance = async (req, res, next) => {
     const userId = Number(req.params.userId);
     const { amount } = req.body;
 
+    if (!Number.isSafeInteger(userId) || userId <= 0) {
+      return res.status(400).json({
+        status: "error",
+        message: "Invalid user account ID.",
+      });
+    }
+
     if (!amount) {
       return res.status(400).json({
         status: "error",
@@ -47,7 +54,7 @@ const adminCreditBalance = async (req, res, next) => {
           receiverAccount: user.accountNumber,
           amount: creditAmount,
           type: "admin_credit",
-          status: "completed",
+          status: "successful",
         },
         { transaction },
       );

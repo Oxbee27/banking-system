@@ -10,6 +10,8 @@ const {
   updatePinSchema,
   transferSchema,
   withdrawSchema,
+  adminCreditSchema,
+  depositSchema,
 } = require("../validators/banking.validator");
 
 const {
@@ -33,13 +35,14 @@ router.patch(
   "/admin/users/:userId/balance",
   authenticate,
   authorization,
+  validate(adminCreditSchema),
   adminCreditBalance,
 );
 
 router.patch("/pin", authenticate, validate(updatePinSchema), updatePin);
 
 router.post("/transfer", authenticate, validate(transferSchema), transferMoney);
-router.post("/deposit/initialize", authenticate, initializePaystackDeposit);
+router.post("/deposit/initialize", authenticate, validate(depositSchema), initializePaystackDeposit);
 router.get("/deposit/verify", authenticate, verifyPaystackDeposit);
 router.post("/paystack/webhook", handlePaystackWebhook);
 

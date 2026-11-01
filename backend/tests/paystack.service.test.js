@@ -1,10 +1,12 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 
 const db = require("../models");
 const {
   initializePayment,
   verifyPayment,
+  handleWebhook,
 } = require("../src/services/paystack.service");
 
 test("payment initialization uses the registered email and secure reference", async () => {
@@ -157,6 +159,73 @@ test("payment verification scopes lookup to the authenticated owner", async () =
   } finally {
     db.payments.findOne = originalFindOne;
     global.fetch = originalFetch;
+    if (previousSecret === undefined) {
+      delete process.env.PAYSTACK_SECRET_KEY;
+    } else {
+      process.env.PAYSTACK_SECRET_KEY = previousSecret;
+    }
+  }
+});
+
+
+test("webhook rejects malformed hexadecimal signatures, including trailing characters", async () => {
+  const previousSecret = process.env.PAYSTACK_SECRET_KEY;
+  process.env.PAYSTACK_SECRET_KEY = "paystack-webhook-test-secret";
+
+  const rawBody = Buffer.from(JSON.stringify({
+    event: "ping",
+    data: {},
+  }));
+
+  const validSignature = crypto
+    .createHmac("sha512", process.env.PAYSTACK_SECRET_KEY)
+    .update(rawBody)
+    .digest("hex");
+
+  try {
+    await assert.rejects(
+      handleWebhook({
+        rawBody,
+        signature: `${validSignature}zz`,
+      }),
+      { message: "Invalid Paystack webhook signature", statusCode: 401 }
+    );
+
+    await assert.rejects(
+      handleWebhook({
+        rawBody,
+        signature: "not-a-valid-signature",
+      }),
+      { message: "Invalid Paystack webhook signature", statusCode: 401 }
+    );
+  } finally {
+    if (previousSecret === undefined) {
+      delete process.env.PAYSTACK_SECRET_KEY;
+    } else {
+      process.env.PAYSTACK_SECRET_KEY = previousSecret;
+    }
+  }
+});
+
+test("webhook accepts a correctly formed SHA-512 signature", async () => {
+  const previousSecret = process.env.PAYSTACK_SECRET_KEY;
+  process.env.PAYSTACK_SECRET_KEY = "paystack-webhook-test-secret";
+
+  const rawBody = Buffer.from(JSON.stringify({
+    event: "ping",
+    data: {},
+  }));
+
+  const signature = crypto
+    .createHmac("sha512", process.env.PAYSTACK_SECRET_KEY)
+    .update(rawBody)
+    .digest("hex");
+
+  try {
+    const result = await handleWebhook({ rawBody, signature });
+    assert.equal(result.status, "ignored");
+    assert.equal(result.event, "ping");
+  } finally {
     if (previousSecret === undefined) {
       delete process.env.PAYSTACK_SECRET_KEY;
     } else {

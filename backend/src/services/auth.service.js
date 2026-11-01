@@ -3,6 +3,13 @@ const jwt = require("jsonwebtoken");
 const { findUserByEmail, createUser } = require("../database/user");
 const generateAccountNumber = require("../utils/accountNumber");
 
+const getSaltRounds = () => {
+  const rounds = Number(process.env.SALT_ROUNDS) || 10;
+  return Number.isInteger(rounds) && rounds >= 10 && rounds <= 15
+    ? rounds
+    : 10;
+};
+
 const createUserWithUniqueAccountNumber = async (payload) => {
   for (let attempt = 1; attempt <= 5; attempt++) {
     try {
@@ -54,7 +61,7 @@ const registerUser = async ({ name, email, password }) => {
 
   const hashedPassword = await bcrypt.hash(
     password,
-    Number(process.env.SALT_ROUNDS) || 10,
+    getSaltRounds(),
   );
 
   return createUserWithUniqueAccountNumber({
@@ -80,17 +87,29 @@ const createAdminUser = async ({ name, email, password }) => {
 
   const hashedPassword = await bcrypt.hash(
     password,
-    Number(process.env.SALT_ROUNDS) || 10,
+    getSaltRounds(),
   );
 
-  return createUserWithUniqueAccountNumber({
-    name: name.trim(),
-    email: normalizedEmail,
-    password: hashedPassword,
-    balance: 0,
-    role: "admin",
-    pin: null,
-  });
+  try {
+    return await createUserWithUniqueAccountNumber({
+      name: name.trim(),
+      email: normalizedEmail,
+      password: hashedPassword,
+      balance: 0,
+      role: "admin",
+      pin: null,
+    });
+  } catch (error) {
+    const constraint = error.parent?.constraint || error.original?.constraint;
+
+    if (constraint === "users_single_admin_only") {
+      const conflict = new Error("An administrator account already exists.");
+      conflict.statusCode = 409;
+      throw conflict;
+    }
+
+    throw error;
+  }
 };
 
 const loginUser = async ({ email, password }) => {

@@ -1,6 +1,6 @@
 const { findUserById } = require("../database/user");
 
-const getProfile = async (req, res) => {
+const getProfile = async (req, res, next) => {
   try {
     const user = await findUserById(req.user.id);
 
@@ -22,10 +22,7 @@ const getProfile = async (req, res) => {
       },
     });
   } catch (error) {
-    return res.status(500).json({
-      status: "error",
-      message: "Something went wrong",
-    });
+    return next(error);
   }
 };
 

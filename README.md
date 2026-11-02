@@ -2,7 +2,7 @@
 
 A banking API and browser-based account dashboard built with Express, Sequelize, PostgreSQL, and a dependency-free frontend. The backend API is available at `/`; the frontend is served at `/app` by the same Express server.
 
-> **Important implementation note:** PostgreSQL configuration and Sequelize models/migrations are present, but the current authentication and banking services store users and transactions in process memory (`src/database/user.js`). Data is lost when the server restarts, and the PostgreSQL tables are not yet the source of truth. This codebase is a development/demo foundation, not a production banking system. Do not use it for real funds or sensitive customer data until persistence, security, auditability, and operational controls are implemented and reviewed.
+> **Important implementation note:** User accounts, balances, PIN hashes, transactions, Paystack payments, and authentication rate-limit counters are stored in PostgreSQL. Run all migrations before serving traffic. This remains a development/demo foundation, not a production banking system; do not use it for real funds or sensitive customer data until security, auditability, funding, and operational controls are independently reviewed.
 
 ## Contents
 
@@ -111,7 +111,7 @@ The API health check is `GET http://localhost:3000/`. The frontend is `http://lo
 
 ## Database migrations
 
-Run migrations against the selected `NODE_ENV` config:
+Run migrations against the selected `NODE_ENV` config before starting the API:
 
 ```bash
 npx sequelize-cli db:migrate
@@ -176,12 +176,12 @@ curl http://localhost:3000/banking/balance \
 
 ## Backend scripts
 
-| Command                        | Description                                                |
-| ------------------------------ | ---------------------------------------------------------- |
-| `npm start`                    | Start the Express server                                   |
-| `npm run dev`                  | Start with nodemon                                         |
-| `npm test`                     | Placeholder script; automated tests are not configured yet |
-| `npx sequelize-cli db:migrate` | Apply database migrations                                  |
+| Command                        | Description                          |
+| ------------------------------ | ------------------------------------ |
+| `npm start`                    | Start the Express server             |
+| `npm run dev`                  | Start with nodemon                   |
+| `npm test`                     | Run the automated Node.js test suite |
+| `npx sequelize-cli db:migrate` | Apply database migrations            |
 
 ---
 
@@ -223,14 +223,12 @@ The UI uses responsive layouts for narrow screens, semantic form labels and butt
 
 # Known limitations and production checklist
 
-The API surface is implemented, but important backend work is still needed before the app represents a functioning persistent banking product:
+The API persists user and banking records in PostgreSQL, but important backend work is still needed before the app represents a production banking product:
 
-- Replace `src/database/user.js` arrays with Sequelize-backed user and transaction persistence. At present, process restarts clear accounts and balances; migrations do not make runtime records persistent.
-- Ensure user, role, account-number, and PIN state are represented in the database model and migrations; the current model contains only name, email, and password.
-- Add profile/account metadata needed by the frontend (account number and role are presently derived from the login token or balance response because the profile response omits them).
-- Use a real, auditable funding source for deposits. The present deposit endpoint increments an in-memory balance without payment settlement.
+- Apply all Sequelize migrations before starting the API. Authentication rate-limit counters also live in PostgreSQL so they are shared across server processes.
+- Use a real, auditable funding source for all deposits. The direct deposit endpoint credits the stored balance without external payment settlement; use the Paystack flow for verified funding.
 - Add transaction authorization controls, idempotency, concurrency-safe balance updates, immutable audit records, limits, fraud controls, and reconciliation.
 - Protect admin account provisioning. The current endpoint is public and relies solely on a shared creation key; use a controlled provisioning flow and stronger authorization.
-- Add CSRF strategy if browser authentication moves from session storage to cookies, secure headers, request throttling on sensitive routes, and token refresh/revocation policy.
-- Add automated unit, integration, migration, and browser tests. `npm test` is currently a placeholder.
+- Add CSRF strategy if browser authentication moves from local storage to cookies, secure headers, and token refresh/revocation policy.
+- Add automated integration, migration, and browser tests.
 - Add monitoring, backups, incident response, secrets rotation, data retention, privacy review, and legal/regulatory review before handling real financial activity.

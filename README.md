@@ -1,10 +1,10 @@
-# Northstar Banking
+ FineBank
 
 A banking API and browser-based account dashboard built with Express, Sequelize, PostgreSQL, and a dependency-free frontend. The backend API is available at `/`; the frontend is served at `/app` by the same Express server.
 
 > **Important implementation note:** User accounts, balances, PIN hashes, transactions, Paystack payments, and authentication rate-limit counters are stored in PostgreSQL. Run all migrations before serving traffic. This remains a development/demo foundation, not a production banking system; do not use it for real funds or sensitive customer data until security, auditability, funding, and operational controls are independently reviewed.
 
-## Contents
+Contents
 
 1. [Backend](#backend)
 2. [Frontend](#frontend)
